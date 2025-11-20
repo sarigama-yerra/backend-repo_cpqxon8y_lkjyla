@@ -7,10 +7,12 @@ Class name lowercased is the collection name:
 - Lead -> "lead"
 - BlogPost -> "blogpost"
 - Testimonial -> "testimonial"
+- Appointment -> "appointment"
 """
 
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
+from datetime import datetime
 
 class Lead(BaseModel):
     name: str = Field(..., description="Full name of the lead")
@@ -32,6 +34,15 @@ class Testimonial(BaseModel):
     role: Optional[str] = None
     quote: str
     rating: Optional[int] = Field(5, ge=1, le=5)
+
+class Appointment(BaseModel):
+    name: str
+    email: EmailStr
+    phone: Optional[str] = None
+    start: datetime = Field(..., description="Start time in ISO 8601 (UTC preferred)")
+    end: datetime = Field(..., description="End time in ISO 8601 (UTC preferred)")
+    note: Optional[str] = None
+    source: Optional[str] = Field("website", description="Booking source")
 
 # Example additional schemas (kept for reference)
 class User(BaseModel):

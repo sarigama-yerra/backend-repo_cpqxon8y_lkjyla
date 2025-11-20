@@ -1,11 +1,12 @@
 import os
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 
 from database import db, create_document, get_documents
-from schemas import Lead, BlogPost, Testimonial
+from schemas import Lead, BlogPost, Testimonial, Appointment
 
 app = FastAPI(title="Website Koning API")
 
@@ -136,10 +137,55 @@ async def list_testimonials():
     if db is None:
         return [
             {"author": "Bakkerij De Graaf", "role": "Lokale bakker", "quote": "Binnen 2 weken live en direct meer aanvragen.", "rating": 5},
-            {"author": "FixIt Service", "role": "Loodgieter", "quote": "Heldere prijzen en snelle service. Aanrader!", "rating": 5},
+            {"author": "FixIt Service", "role": "Loodgieter", "quote": "Heldere prijzen en snelle service. Aanrader!" , "rating": 5},
         ]
     try:
         docs = get_documents("testimonial", limit=20)
+        for d in docs:
+            if "_id" in d:
+                d["id"] = str(d.pop("_id"))
+        return docs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Appointment endpoints
+@app.post("/api/appointments")
+async def create_appointment(appt: Appointment):
+    """Create an appointment, preventing overlaps for the same time window.
+    Two appointments are considered conflicting if their time ranges overlap.
+    """
+    # Validate time range
+    if appt.end <= appt.start:
+        raise HTTPException(status_code=400, detail="End time must be after start time")
+
+    if db is None:
+        # Accept but do not store if DB missing
+        return {"status": "accepted", "stored": False}
+
+    # Check for overlap: (existing.start < new.end) AND (existing.end > new.start)
+    try:
+        conflict = db["appointment"].find_one({
+            "$and": [
+                {"start": {"$lt": appt.end}},
+                {"end": {"$gt": appt.start}},
+            ]
+        })
+        if conflict:
+            raise HTTPException(status_code=409, detail="Tijdslot is al bezet. Kies een andere tijd.")
+
+        _id = create_document("appointment", appt)
+        return {"id": _id, "status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/appointments")
+async def list_appointments():
+    if db is None:
+        return []
+    try:
+        docs = get_documents("appointment", limit=100)
         for d in docs:
             if "_id" in d:
                 d["id"] = str(d.pop("_id"))
