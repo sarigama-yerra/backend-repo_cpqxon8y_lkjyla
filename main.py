@@ -1,9 +1,10 @@
 import os
-from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, time, timedelta
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from typing import List
+import smtplib
+from email.mime.text import MIMEText
 
 from database import db, create_document, get_documents
 from schemas import Lead, BlogPost, Testimonial, Appointment
@@ -17,6 +18,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Email helper ---
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASS = os.getenv("SMTP_PASS")
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER or "no-reply@websitekoning.com")
+
+
+def send_email(subject: str, body: str, to_addrs: List[str]):
+    if not (SMTP_HOST and SMTP_FROM):
+        # No SMTP configured; skip silently but log to console
+        print("[email] SMTP not configured. Would send:", subject, to_addrs)
+        return
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM
+        msg["To"] = ", ".join(to_addrs)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            if SMTP_USER and SMTP_PASS:
+                server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_FROM, to_addrs, msg.as_string())
+    except Exception as e:
+        print("[email] Error sending email:", e)
+
 
 @app.get("/")
 def read_root():
@@ -148,32 +176,90 @@ async def list_testimonials():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Appointment endpoints
+# --- Appointment helpers ---
+BUSINESS_START = time(10, 0)
+BUSINESS_END = time(17, 0)
+SLOT_DURATION = timedelta(minutes=30)
+BUFFER = timedelta(minutes=15)
+MAX_CONCURRENT = 2  # allow one overlap -> capacity 2
+
+
+def within_business_hours(start_dt: datetime, end_dt: datetime) -> bool:
+    # same-day enforcement
+    if start_dt.date() != end_dt.date():
+        return False
+    if start_dt.weekday() > 4:  # 0=Mon
+        return False
+    start_t = start_dt.time()
+    end_t = end_dt.time()
+    # Start at or after 10:00, end at or before 17:00
+    return (start_t >= BUSINESS_START) and (end_t <= BUSINESS_END)
+
+
 @app.post("/api/appointments")
-async def create_appointment(appt: Appointment):
-    """Create an appointment, preventing overlaps for the same time window.
-    Two appointments are considered conflicting if their time ranges overlap.
+async def create_appointment(appt: Appointment, background: BackgroundTasks):
+    """Create an appointment with business rules:
+    - Only weekdays Mon–Fri, 10:00–17:00
+    - Fixed 30-minute duration
+    - 15-minute buffer around appointments
+    - Max 2 concurrent appointments in the same buffered window
     """
-    # Validate time range
+    # Basic time validation
     if appt.end <= appt.start:
-        raise HTTPException(status_code=400, detail="End time must be after start time")
+        raise HTTPException(status_code=400, detail="Eindtijd moet na starttijd liggen")
+
+    # Fixed 30-minute duration
+    if (appt.end - appt.start) != SLOT_DURATION:
+        raise HTTPException(status_code=400, detail="Alleen afspraken van 30 minuten zijn mogelijk")
+
+    # Business hours and weekdays
+    if not within_business_hours(appt.start, appt.end):
+        raise HTTPException(status_code=400, detail="Afspraken kunnen alleen ma–vr tussen 10:00 en 17:00")
 
     if db is None:
-        # Accept but do not store if DB missing
         return {"status": "accepted", "stored": False}
 
-    # Check for overlap: (existing.start < new.end) AND (existing.end > new.start)
+    # Overlap check with buffer and capacity
     try:
-        conflict = db["appointment"].find_one({
+        buffered_start = appt.start - BUFFER
+        buffered_end = appt.end + BUFFER
+        overlapping_count = db["appointment"].count_documents({
             "$and": [
-                {"start": {"$lt": appt.end}},
-                {"end": {"$gt": appt.start}},
+                {"start": {"$lt": buffered_end}},
+                {"end": {"$gt": buffered_start}},
             ]
         })
-        if conflict:
-            raise HTTPException(status_code=409, detail="Tijdslot is al bezet. Kies een andere tijd.")
+        if overlapping_count >= MAX_CONCURRENT:
+            raise HTTPException(status_code=409, detail="Tijdslot is vol. Kies een ander moment.")
 
         _id = create_document("appointment", appt)
+
+        # Send notifications (best effort)
+        start_str = appt.start.strftime("%Y-%m-%d %H:%M")
+        end_str = appt.end.strftime("%H:%M")
+        subject = f"Nieuwe afspraak: {appt.name} – {start_str}"
+        body_admin = (
+            f"Nieuwe afspraak geboekt:\n\n"
+            f"Naam: {appt.name}\n"
+            f"E-mail: {appt.email}\n"
+            f"Telefoon: {appt.phone}\n"
+            f"Tijd: {start_str} - {end_str}\n"
+            f"Bron: {appt.source or 'website'}\n"
+            f"Notitie: {appt.note or '-'}\n"
+            f"ID: {_id}\n"
+        )
+        admin_recipients = ["nick@websitekoning.com", "amine@websitekoning.com"]
+        background.add_task(send_email, subject, body_admin, admin_recipients)
+
+        subject_client = "Bevestiging afspraak – Website Koning"
+        body_client = (
+            f"Hi {appt.name},\n\n"
+            f"Je afspraak is bevestigd op {start_str} (30 minuten).\n"
+            f"We bellen of videobellen op het afgesproken tijdstip.\n\n"
+            f"Tot dan!\nWebsite Koning"
+        )
+        background.add_task(send_email, subject_client, body_client, [appt.email])
+
         return {"id": _id, "status": "ok"}
     except HTTPException:
         raise
@@ -185,7 +271,7 @@ async def list_appointments():
     if db is None:
         return []
     try:
-        docs = get_documents("appointment", limit=100)
+        docs = get_documents("appointment", limit=200)
         for d in docs:
             if "_id" in d:
                 d["id"] = str(d.pop("_id"))

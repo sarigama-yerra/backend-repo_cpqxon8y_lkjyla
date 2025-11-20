@@ -38,11 +38,12 @@ class Testimonial(BaseModel):
 class Appointment(BaseModel):
     name: str
     email: EmailStr
-    phone: Optional[str] = None
-    start: datetime = Field(..., description="Start time in ISO 8601 (UTC preferred)")
-    end: datetime = Field(..., description="End time in ISO 8601 (UTC preferred)")
+    phone: str = Field(..., description="Phone number is required")
+    start: datetime = Field(..., description="Start time in ISO 8601 (UTC or naive server local)")
+    end: datetime = Field(..., description="End time in ISO 8601 (UTC or naive server local)")
     note: Optional[str] = None
     source: Optional[str] = Field("website", description="Booking source")
+    assigned_to: Optional[str] = Field(None, description="Assigned staff member handling this appointment")
 
 # Example additional schemas (kept for reference)
 class User(BaseModel):
