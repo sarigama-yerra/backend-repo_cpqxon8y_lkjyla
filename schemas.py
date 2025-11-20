@@ -2,47 +2,46 @@
 Database Schemas
 
 Define your MongoDB collection schemas here using Pydantic models.
-These schemas are used for data validation in your application.
-
 Each Pydantic model represents a collection in your database.
-Model name is converted to lowercase for the collection name:
-- User -> "user" collection
-- Product -> "product" collection
-- BlogPost -> "blogs" collection
+Class name lowercased is the collection name:
+- Lead -> "lead"
+- BlogPost -> "blogpost"
+- Testimonial -> "testimonial"
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, EmailStr
+from typing import Optional, List
 
-# Example schemas (replace with your own):
+class Lead(BaseModel):
+    name: str = Field(..., description="Full name of the lead")
+    email: EmailStr = Field(..., description="Email address of the lead")
+    phone: Optional[str] = Field(None, description="Phone number")
+    message: Optional[str] = Field(None, description="Message or context")
+    consent: bool = Field(True, description="GDPR consent to be contacted")
+    source: Optional[str] = Field("website", description="Source of the lead (e.g., website, campaign)")
 
+class BlogPost(BaseModel):
+    title: str
+    excerpt: str
+    content: Optional[str] = None
+    tags: Optional[List[str]] = None
+    author: Optional[str] = Field("Website Koning")
+
+class Testimonial(BaseModel):
+    author: str
+    role: Optional[str] = None
+    quote: str
+    rating: Optional[int] = Field(5, ge=1, le=5)
+
+# Example additional schemas (kept for reference)
 class User(BaseModel):
-    """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
-    """
-    name: str = Field(..., description="Full name")
-    email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+    name: str
+    email: EmailStr
+    is_active: bool = True
 
 class Product(BaseModel):
-    """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
-    """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
-
-# Add your own schemas here:
-# --------------------------------------------------
-
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+    title: str
+    description: Optional[str] = None
+    price: float
+    category: Optional[str] = None
+    in_stock: bool = True
